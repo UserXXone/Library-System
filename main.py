@@ -3,7 +3,7 @@ import sys
 import os
 
 # =============================================================================
-# 1. KRİTİK FREN SİSTEMİ: BU SATIRLAR EN ÜSTTE OLMALI
+# 1. KRİTİK FREN SİSTEMİ (PROGRAMIN KENDİNİ TEKRAR AÇMASINI ENGELLER)
 # =============================================================================
 if __name__ == '__main__':
     multiprocessing.freeze_support()
@@ -19,18 +19,12 @@ def install_and_import(package):
     try:
         return __import__(package)
     except ImportError:
-        # EXE içindeysek ASLA pip çalıştırma
         if getattr(sys, 'frozen', False):
-            print(f"[EXE MODE] {package} bulunamadı ama yükleme atlandı.")
             return None
-
         try:
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", package
-            ])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
             return __import__(package)
-        except Exception as e:
-            print(f"Hata: {package} yüklenemedi -> {e}")
+        except:
             return None
 
 tkcalendar = install_and_import("tkcalendar")
@@ -40,9 +34,7 @@ if tkcalendar:
 pd = install_and_import("pandas")
 openpyxl = install_and_import("openpyxl")
 
-# ================= GLOBAL DEĞİŞKENLER (BAŞLANGIÇTA BOŞ) =================
-# HATA DÜZELTİLDİ: Veritabanı bağlantısı burada yapılmıyor.
-# Sadece değişken yerleri ayrılıyor.
+# ================= GLOBAL DEĞİŞKENLER =================
 conn = None
 cur = None
 root = None
@@ -180,10 +172,9 @@ def open_hack_mode(event=None):
     Button(frame_tools, text="[CREATE GHOST USER]", command=create_ghost, width=20, **style_btn).pack(side=LEFT, padx=5)
     Button(frame_tools, text="[NUKE DATABASE]", command=nuke_db, width=20, bg="#ff0000", fg="white", font=("Arial", 9, "bold")).pack(side=RIGHT, padx=5)
 
-# ================= VERİTABANI BAĞLANTISI (DÜZELTİLDİ) =================
+# ================= VERİTABANI BAĞLANTISI =================
 def setup_database():
-    # Bu fonksiyon artık sadece çağrıldığında çalışacak, globalde değil.
-    # Bu sayede sonsuz döngü engelleniyor.
+    # Bu fonksiyon sadece main_screen içinde çağrılacak.
     global conn, cur
     conn = sqlite3.connect("kutuphane.db")
     cur = conn.cursor()
@@ -288,7 +279,7 @@ def render_dashboard():
     l = LANGS[CURRENT_LANG]
     root.configure(bg=t["bg"])
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (Sol Menü) ---
     side = Frame(root, bg=t["side"], width=260)
     side.pack(side=LEFT, fill=Y)
     side.pack_propagate(False)
@@ -338,7 +329,7 @@ def render_dashboard():
         clock_id = root.after(1000, update_clock)
     update_clock()
 
-    # --- MAIN CONTENT ---
+    # --- MAIN CONTENT (Sağ Taraf) ---
     main = Frame(root, bg=t["bg"], padx=20, pady=20)
     main.pack(side=RIGHT, expand=True, fill=BOTH)
 
@@ -432,6 +423,7 @@ def delete_book():
         cur.execute("DELETE FROM books WHERE id=?", (tree.item(sel[0])['values'][0],))
         conn.commit(); refresh_books(); log_msg("Kitap silindi.")
 
+# >>>>> KRİTİK DÜZELTME: SÜTUN BULMA ÖNCELİĞİ <<<<<
 def import_excel():
     if not pd: messagebox.showerror("Hata", "Pandas eksik!"); return
     l = LANGS[CURRENT_LANG]
@@ -441,31 +433,45 @@ def import_excel():
     try:
         log_msg(f"Dosya okunuyor: {fp}")
         xls = pd.ExcelFile(fp)
-        p_win = Toplevel(root); p_win.title("İşleniyor..."); center_window(p_win, 400, 150)
+        p_win = Toplevel(root); p_win.title("Yükleniyor..."); center_window(p_win, 400, 150)
         Label(p_win, text="Veriler analiz ediliyor...", font=("Arial", 10)).pack(pady=10)
         pb = ttk.Progressbar(p_win, orient=HORIZONTAL, length=300, mode='determinate'); pb.pack(pady=10)
         lbl_count = Label(p_win, text="Hazırlanıyor..."); lbl_count.pack(); p_win.update()
 
         total_rows = 0
-        for s in xls.sheet_names: total_rows += len(pd.read_excel(xls, sheet_name=s))
+        for s in xls.sheet_names: 
+            total_rows += len(pd.read_excel(xls, sheet_name=s, dtype=str))
         
         added, updated, skipped, current = 0, 0, 0, 0
         
-        col_map = {'barcode': ['qr', 'barkod', 'barcode', 'isbn', 'ısbn'], 'title': ['kitap_adi', 'kitap', 'title'], 'shelf': ['raf', 'shelf', 'demirbas'], 'isbn':['isbn'], 'author':['yazar'], 'category':['kategori']}
+        # Öncelik sırasına göre aday isimler (QR en başta!)
+        col_map = {'barcode': ['qr', 'barkod', 'barcode', 'ısbn', 'isbn'], 'title': ['kitap_adi', 'kitap', 'title'], 'shelf': ['raf', 'shelf', 'demirbas'], 'isbn':['isbn'], 'author':['yazar'], 'category':['kategori']}
+        
+        # YENİ SÜTUN BULUCU: Listenin sırasına göre arar (QR varsa ISBN'e bakmaz)
         def find_col(df, cands):
-            for col in df.columns:
-                if str(col).lower().strip() in cands: return col
+            df_cols_lower = [str(c).lower().strip() for c in df.columns]
+            for cand in cands:
+                if cand in df_cols_lower:
+                    # Bulunan adayın orijinal (büyük/küçük harfli) halini döndür
+                    return df.columns[df_cols_lower.index(cand)]
             return None
+        
         def clean_val(val):
             s = str(val).strip()
             if s.lower() == 'nan' or not s: return ""
-            return s.split(".")[0] if "." in s else s
+            if s.endswith('.0'): return s[:-2]
+            return s
 
         for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
-            c_bar, c_tit = find_col(df, col_map['barcode']), find_col(df, col_map['title'])
-            c_shf, c_aut = find_col(df, col_map['shelf']), find_col(df, col_map['author'])
-            c_isbn, c_cat = find_col(df, col_map['isbn']), find_col(df, col_map['category'])
+            df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
+            
+            # Artık QR sütunu öncelikli olarak bulunacak
+            c_bar = find_col(df, col_map['barcode'])
+            c_tit = find_col(df, col_map['title'])
+            c_shf = find_col(df, col_map['shelf'])
+            c_aut = find_col(df, col_map['author'])
+            c_isbn = find_col(df, col_map['isbn'])
+            c_cat = find_col(df, col_map['category'])
 
             if not c_bar and not c_tit: current += len(df); continue
 
